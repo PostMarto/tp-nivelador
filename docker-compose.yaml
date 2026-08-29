@@ -8,6 +8,10 @@ services:
       - PYTHONUNBUFFERED=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+    ports:
+      - "5678:5678"
+    networks:
+      - proxy
 
   client_0:
     build:
@@ -68,3 +72,9 @@ services:
       - AGENCY_ID=4
       - SERVER_HOST=server
       - SERVER_PORT=5678
+
+networks:
+  proxy:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
