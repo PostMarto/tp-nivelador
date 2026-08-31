@@ -108,7 +108,11 @@ func add_clients(amount_clients int) {
     environment:
       - AGENCY_ID=%d
       - SERVER_HOST=server
-      - SERVER_PORT=%s \n`, index_client, index_client, index_client, config["server_port"])
+      - SERVER_PORT=%s
+      - INPUT_FILE=/input/input-%d.csv
+    volumes:
+      - ./input:/input
+`, index_client, index_client, index_client, config["server_port"], index_client+1)
 		save_client(client_config)
 	}
 }

@@ -8,6 +8,30 @@ services:
       - PYTHONUNBUFFERED=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+    ports:
+      - "5678:5678"
+    networks:
+      - proxy
+
+  networks:
+  proxy:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
+  volumes:
+    input:
+      driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./input
+    output:
+      driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./output
 
   client_0:
     build:
@@ -18,5 +42,53 @@ services:
       - server
     environment:
       - AGENCY_ID=0
+      - SERVER_HOST=server
+      - SERVER_PORT=5678
+
+  client_1:
+    build:
+      context: ./services/client
+      dockerfile: Dockerfile
+    container_name: client_1
+    depends_on:
+      - server
+    environment:
+      - AGENCY_ID=1
+      - SERVER_HOST=server
+      - SERVER_PORT=5678
+
+  client_2:
+    build:
+      context: ./services/client
+      dockerfile: Dockerfile
+    container_name: client_2
+    depends_on:
+      - server
+    environment:
+      - AGENCY_ID=2
+      - SERVER_HOST=server
+      - SERVER_PORT=5678
+
+  client_3:
+    build:
+      context: ./services/client
+      dockerfile: Dockerfile
+    container_name: client_3
+    depends_on:
+      - server
+    environment:
+      - AGENCY_ID=3
+      - SERVER_HOST=server
+      - SERVER_PORT=5678
+
+  client_4:
+    build:
+      context: ./services/client
+      dockerfile: Dockerfile
+    container_name: client_4
+    depends_on:
+      - server
+    environment:
+      - AGENCY_ID=4
       - SERVER_HOST=server
       - SERVER_PORT=5678

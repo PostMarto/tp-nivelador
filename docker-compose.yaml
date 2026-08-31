@@ -1,3 +1,9 @@
+networks:
+  proxy:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
 services:
   server:
     build:
@@ -8,10 +14,13 @@ services:
       - PYTHONUNBUFFERED=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - OUTPUT_FILE=/output.csv
     ports:
       - "5678:5678"
     networks:
       - proxy
+    volumes:
+      - ./output:/output
 
   client_0:
     build:
@@ -24,6 +33,9 @@ services:
       - AGENCY_ID=0
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - INPUT_FILE=/input/input-1.csv
+    volumes:
+      - ./input:/input
 
   client_1:
     build:
@@ -36,6 +48,9 @@ services:
       - AGENCY_ID=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - INPUT_FILE=/input/input-2.csv
+    volumes:
+      - ./input:/input
 
   client_2:
     build:
@@ -48,6 +63,9 @@ services:
       - AGENCY_ID=2
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - INPUT_FILE=/input/input-3.csv
+    volumes:
+      - ./input:/input
 
   client_3:
     build:
@@ -60,6 +78,9 @@ services:
       - AGENCY_ID=3
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - INPUT_FILE=/input/input-4.csv
+    volumes:
+      - ./input:/input
 
   client_4:
     build:
@@ -72,9 +93,6 @@ services:
       - AGENCY_ID=4
       - SERVER_HOST=server
       - SERVER_PORT=5678
-
-networks:
-  proxy:
-    driver: bridge
-    driver_opts:
-      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+      - INPUT_FILE=/input/input-5.csv
+    volumes:
+      - ./input:/input
