@@ -110,9 +110,13 @@ func add_clients(amount_clients int) {
       - SERVER_HOST=server
       - SERVER_PORT=%s
       - INPUT_FILE=/input/input-%d.csv
+      - OUTPUT_FILE=/output/output-%d.csv
     volumes:
       - ./input:/input
-`, index_client, index_client, index_client, config["server_port"], index_client+1)
+      - ./output:/output
+    networks:
+      - proxy
+`, index_client, index_client, index_client, config["server_port"], index_client+1, index_client+1)
 		save_client(client_config)
 	}
 }
