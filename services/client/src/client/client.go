@@ -110,18 +110,22 @@ func (client *Client) Run() error {
 		}
 
 		bytes, err := writer.WriteString(responseMessage)
-		if err != nil && bytes == 0 {
+		if err != nil || bytes != len(responseMessage) {
 			logger.Error("write-response", logger.Fail, responseMessage)
 			return err
 		}
 
 		bytes, err = writer.WriteString("\n")
-		if err != nil && bytes == 0 {
-			logger.Error("write-response", logger.Fail, responseMessage)
+		if err != nil || bytes != len("\n") {
+			logger.Error("write-response-jumpline", logger.Fail, "jumpline char")
 			return err
 		}
 
-		writer.Flush()
+		err = writer.Flush()
+		if err != nil {
+			logger.Error("flush-write-response", logger.Fail)
+			return err
+		}
 
 		messageId++
 		time.Sleep(ECHO_CLIENT_MESSAGE_DELAY_MS * time.Millisecond)
