@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/messages"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
 )
 
@@ -17,6 +18,19 @@ const ECHO_CLIENT_BUFFER_SIZE = 512
 const ECHO_CLIENT_MESSAGE_AMOUNT = 3
 const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
 
+const WINDOW_SIZE = 10
+const MESSAGE_QUEUE_SIZE = 15
+
+type ClientStatus uint8
+
+const (
+	CONNECTING     ClientStatus = 1   // 00000001
+	SENDING        ClientStatus = 2   // 00000010
+	WAITING_WINNER ClientStatus = 4   // 00000100
+	WAITING_CLOSE  ClientStatus = 8   // 00001000
+	CLOSING        ClientStatus = 128 // 10000000
+)
+
 type ClientConfig struct {
 	ServerHost string
 	ServerPort string
@@ -25,9 +39,22 @@ type ClientConfig struct {
 	OutputFile string
 }
 
+type SentMessage struct {
+	Message     messages.Message
+	AckReceived bool
+}
+
 type Client struct {
-	conn   net.Conn
-	config ClientConfig
+	conn               net.Conn
+	config             ClientConfig
+	status             ClientStatus
+	messages_on_flight map[uint8]SentMessage
+	input              *os.File
+	output             *os.File
+	reader             *bufio.Scanner
+	writer             *bufio.Writer
+	id                 uint32
+	window_base        uint8
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
@@ -38,6 +65,28 @@ func NewClient(config ClientConfig) (*Client, error) {
 	}
 
 	client := &Client{conn: conn, config: config}
+	id, err := messages.Parse_string_uint(client.config.AgencyId)
+
+	input, err := os.Open(client.config.InputFile)
+	if err != nil {
+		logger.Error("open-input-file", logger.Fail, client.config.InputFile)
+		return nil, err
+	}
+
+	output, err := os.Create(client.config.OutputFile)
+	if err != nil {
+		logger.Error("open-output-file", logger.Fail, client.config.OutputFile)
+		return nil, err
+	}
+
+	client.messages_on_flight = make(map[uint8]SentMessage, 0)
+	client.input = input
+	client.output = output
+	client.reader = bufio.NewScanner(input)
+	client.writer = bufio.NewWriter(output)
+	client.status = CONNECTING
+	client.id = uint32(id)
+	client.window_base = 0
 	return client, nil
 }
 
@@ -62,81 +111,52 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
+func (client *Client) connect() {
+	connect_message, err := messages.Build_message(messages.CONNECT, 0, 0, uint32(client.id), "")
+	if err != nil {
+
+	}
+	client.send(connect_message)
+}
+
+func (client *Client) send(message messages.Message) {
+	binary_message := messages.Serialize(message)
+	if err := safe_socket.SendAll(client.conn, binary_message); err != nil {
+		logger.Error("send-message", logger.Fail)
+		return
+	}
+
+	if message.Header.Type == messages.BET {
+		seq_num := message.Header.SeqNum
+		client.messages_on_flight[seq_num] = SentMessage{message, false}
+	}
+}
+
+func (client *Client) get_next_seq_num() uint8 {
+	return client.window_base + uint8(len(client.messages_on_flight))
+}
+
 func (client *Client) Run() error {
-	const mainAction = "test-echo-server"
-	defer client.conn.Close()
+	message_queue := make(chan messages.Message, MESSAGE_QUEUE_SIZE)
+	processor_done := make(chan struct{})
 
-	input, err := os.Open(client.config.InputFile)
-	if err != nil {
-		logger.Error("open-input-file", logger.Fail, client.config.InputFile)
-		return err
-	}
-	defer input.Close()
+	go func() {
+		defer close(processor_done)
 
-	output, err := os.Create(client.config.OutputFile)
-	if err != nil {
-		logger.Error("open-output-file", logger.Fail, client.config.OutputFile)
-		return err
-	}
-	defer output.Close()
-
-	scanner := bufio.NewScanner(input)
-	writer := bufio.NewWriter(output)
-	messageId := 0
-
-	for scanner.Scan() {
-
-		messageArgs := []any{"agency-id", client.config.AgencyId, "message-id", messageId}
-		logger.Info(mainAction, logger.InProgress, messageArgs...)
-
-		clientMessage := scanner.Text()
-
-		if err := safe_socket.SendAll(client.conn, []byte(clientMessage)); err != nil {
-			logger.Error("send-message", logger.Fail, messageArgs...)
-			return err
+		for message := range message_queue {
+			client.process_message(message)
 		}
+	}()
 
-		responseBuffer, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
+	client.connect()
+
+	for {
+		received_message, err := messages.Read(client.conn)
 		if err != nil {
-			logger.Error("recv-response", logger.Fail, messageArgs...)
-			return err
+			logger.Error("deserialize-response", logger.Fail)
+			continue
 		}
-
-		responseMessage := string(responseBuffer)
-
-		if responseMessage != clientMessage {
-			logger.Error("check-response", logger.Fail, messageArgs...)
-			return err
-		}
-
-		bytes, err := writer.WriteString(responseMessage)
-		if err != nil || bytes != len(responseMessage) {
-			logger.Error("write-response", logger.Fail, responseMessage)
-			return err
-		}
-
-		bytes, err = writer.WriteString("\n")
-		if err != nil || bytes != len("\n") {
-			logger.Error("write-response-jumpline", logger.Fail, "jumpline char")
-			return err
-		}
-
-		err = writer.Flush()
-		if err != nil {
-			logger.Error("flush-write-response", logger.Fail)
-			return err
-		}
-
-		messageId++
-		time.Sleep(ECHO_CLIENT_MESSAGE_DELAY_MS * time.Millisecond)
+		message_queue <- received_message
 	}
 
-	if err := scanner.Err(); err != nil {
-		logger.Error("read-file", logger.Fail, client.config.InputFile)
-		return err
-	}
-
-	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
-
-	return nil
 }

@@ -1,22 +1,47 @@
 package safe_socket
 
-import "io"
+import (
+	"io"
 
-//TODO: Complete with a short-read/short-write tolerant implementation
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
+)
 
 func SendAll(socket io.Writer, bytes []byte) error {
-	_, err := socket.Write(bytes)
-	if err != nil {
-		return err
+
+	for len(bytes) > 0 {
+		n, err := socket.Write(bytes)
+		if err != nil {
+			logger.Error("send-all-error", logger.Fail)
+			return err
+		}
+		if n == 0 {
+			logger.Error("send-all-short-write", logger.Fail)
+			return io.ErrShortWrite
+		}
+		bytes = bytes[n:]
 	}
+
 	return nil
+
 }
 
 func RecvAll(socket io.Reader, size int) ([]byte, error) {
 	buff := make([]byte, size)
-	n, err := socket.Read(buff)
-	if err != nil {
-		return nil, err
+	received := 0
+	for received < size {
+		n, err := socket.Read(buff[received:])
+		received += n
+		if err != nil {
+			if received == size {
+				return buff, nil
+			}
+			logger.Error("receive-all-error", logger.Fail)
+			return buff[:received], err
+		}
+		if n == 0 {
+			logger.Error("reveice-all-short-read", logger.Fail)
+		}
 	}
-	return buff[:n], nil
+
+	return buff, nil
 }
