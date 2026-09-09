@@ -60,6 +60,7 @@ func run() int {
 		logger.Error("client-run", logger.Fail, "err", err)
 		return 1
 	}
+	client.Close_all()
 	return 0
 }
 

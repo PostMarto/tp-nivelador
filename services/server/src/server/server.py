@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 import queue
+import signal
 import socket
 import threading
 import logger
@@ -11,6 +12,7 @@ from pathlib import Path
 
 LOTTERY_PATH = "/output/lottery.csv"
 
+RUNNING         = 1   # 00000001
 CONNECTING      = 1   # 00000001
 SENDING         = 2   # 00000010
 WAITING_WINNER  = 4   # 00000100
@@ -31,11 +33,16 @@ class Server:
         self.lottery = Lottery(LOTTERY_PATH)
         self.server_host = server_host
         self.server_port = server_port
+        self.status = RUNNING
         self.threads = []
         self.finished_agencies = set()
         self.agency_quorum_min = agency_quorum_min
         self.lottery_condition = threading.Condition()
         self.lottery_error: Exception | None = None
+        self.lottery_thread: threading.Thread | None = None
+        self.lottery_queue: queue.Queue | None = None
+        self.sockets = []
+        self.server_socket: socket.socket | None = None
 
     def _handle_client(self, client_socket: socket.socket, queue: queue.Queue):
         action = "handle-client"
@@ -43,8 +50,10 @@ class Server:
         client_connection = ClientConnection(client_socket, CONNECTING, 0)
         try:
             logger.info(action, logger.LogResult.in_progress) # type: ignore
-            while client_connection.status != CLOSING:
+            while client_connection.status != CLOSING and self.status != CLOSING:
                 msg = messages.read(client_socket)
+                if self.status == CLOSING:
+                    break
                 self.process_message(msg, client_connection, queue)
         except Exception as e:
             logger.error(
@@ -54,7 +63,7 @@ class Server:
                 error = messages.build_message(messages.ERROR, 0, 0, client_connection.agency_id, None)
                 messages.send(client_socket, error)
             except OSError:
-                pass  # The peer may already have disconnected.
+                pass  
         finally:
             client_socket.close()
 
@@ -79,24 +88,66 @@ class Server:
 
     def run(self):
         action = "accept-connection"
-        lottery_queue = queue.Queue()
-        lottery_thread = threading.Thread(target= self._handle_lottery, args=(lottery_queue,))
-        lottery_thread.start()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-            server_socket.bind((self.server_host, self.server_port))
-            server_socket.listen()
-            while True:
-                try:
-                    logger.info(action, logger.LogResult.in_progress)
-                    client_socket, _ = server_socket.accept()
-                except Exception as e:
-                    logger.error(action, logger.LogResult.fail)
-                    raise e
-                logger.info(action, logger.LogResult.success)
+        self.sigterm_listener()
+        self.lottery_queue = queue.Queue()
+        self.lottery_thread = threading.Thread(target= self._handle_lottery, args=(self.lottery_queue,))
+        self.lottery_thread.start()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+                server_socket.bind((self.server_host, self.server_port))
+                server_socket.listen()
+                self.server_socket = server_socket
+                while self.status != CLOSING:
+                    try:
+                        logger.info(action, logger.LogResult.in_progress)
+                        client_socket, _ = server_socket.accept()
+                        self.sockets.append(client_socket)
+                        if self.status == CLOSING:
+                            break
+                    except OSError:
+                        if self.status == CLOSING:
+                            break
+                        logger.error(action, logger.LogResult.fail)
+                        raise
+                    logger.info(action, logger.LogResult.success)
 
-                client_thread = threading.Thread(target= self._handle_client, args=(client_socket, lottery_queue,))
-                client_thread.start()
-                self.threads.append(client_thread)
+                    client_thread = threading.Thread(target= self._handle_client, args=(client_socket, self.lottery_queue,))
+                    client_thread.start()
+                    self.threads.append(client_thread)
+        finally:
+            self.shutdown()
+
+    def sigterm_listener(self):
+        signal.signal(signal.SIGTERM, self.sigterm_handler)
+
+    def sigterm_handler(self, signum, frame):
+        self.status = CLOSING
+        if self.server_socket is not None:
+            self.server_socket.close()
+
+    def shutdown(self):
+        self.status = CLOSING
+        for conn in self.sockets:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
+
+        with self.lottery_condition:
+            self.lottery_error = Exception("server is shutting down")
+            self.lottery_condition.notify_all()
+
+        for thread in self.threads:
+            thread.join()
+
+        if self.lottery_queue is not None:
+            self.lottery_queue.put(None)
+
+        if self.lottery_thread is not None:
+            self.lottery_thread.join()
+        
+        logger.info("server-shutdown", logger.LogResult.success)
 
     def process_message(self, message: messages.Message, client_connection: ClientConnection, queue: queue.Queue):
         match message.Header.Type:

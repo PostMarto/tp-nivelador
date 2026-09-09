@@ -2,8 +2,12 @@ package client
 
 import (
 	"bufio"
+	"errors"
 	"net"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -53,6 +57,7 @@ type Client struct {
 	id                 uint32
 	window_base        uint8
 	input_done         bool
+	status_mutex       sync.Mutex
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
@@ -145,18 +150,32 @@ func (client *Client) get_next_seq_num() uint8 {
 }
 
 func (client *Client) Run() error {
-	defer client.close_all()
+	sigterm_listener := make(chan os.Signal, 1)
+	signal.Notify(sigterm_listener, os.Interrupt, syscall.SIGTERM)
+
+	message_queue := make(chan messages.Message, MESSAGE_QUEUE_SIZE)
+	processor_done := make(chan struct{})
+
+	go func() {
+		<-sigterm_listener
+		logger.Info("sigterm-listener", logger.InProgress)
+		client.status_mutex.Lock()
+		defer client.status_mutex.Unlock()
+		client.status = CLOSING
+		<-processor_done
+		client.Close_all()
+	}()
+
+	defer client.Close_all()
 	if err := client.connect(); err != nil {
 		return err
 	}
 
-	message_queue := make(chan messages.Message, MESSAGE_QUEUE_SIZE)
-	processor_done := make(chan struct{})
 	var process_err error
 
 	go func() {
 		defer close(processor_done)
-		defer client.conn.Close() // Unblock the reader when processing finishes.
+		defer client.conn.Close()
 
 		for message := range message_queue {
 			if err := client.process_message(message); err != nil {
@@ -200,4 +219,38 @@ read_loop:
 		return nil
 	}
 	return read_err
+}
+
+func (client *Client) Close_all() {
+	if client.writer != nil {
+		err := client.writer.Flush()
+		if err != nil {
+			logger.Error("close-all-flush", logger.Fail)
+		}
+		client.writer = nil
+	}
+
+	if client.input != nil {
+		err := client.input.Close()
+		if err != nil {
+			logger.Error("close-all-input", logger.Fail)
+		}
+		client.input = nil
+	}
+
+	if client.output != nil {
+		err := client.output.Close()
+		if err != nil {
+			logger.Error("close-all-output", logger.Fail)
+		}
+		client.output = nil
+	}
+
+	if client.conn != nil {
+		err := client.conn.Close()
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Error("close-all-conn", logger.Fail)
+		}
+		client.conn = nil
+	}
 }

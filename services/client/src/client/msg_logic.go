@@ -3,7 +3,6 @@ package client
 import (
 	"errors"
 	"fmt"
-	"net"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/messages"
@@ -93,40 +92,6 @@ func (client *Client) send_bet_end() error {
 		return errors.New("Could not create message")
 	}
 	return client.send(message)
-}
-
-func (client *Client) close_all() {
-	if client.writer != nil {
-		err := client.writer.Flush()
-		if err != nil {
-			logger.Error("close-all-flush", logger.Fail)
-		}
-		client.writer = nil
-	}
-
-	if client.input != nil {
-		err := client.input.Close()
-		if err != nil {
-			logger.Error("close-all-input", logger.Fail)
-		}
-		client.input = nil
-	}
-
-	if client.output != nil {
-		err := client.output.Close()
-		if err != nil {
-			logger.Error("close-all-output", logger.Fail)
-		}
-		client.output = nil
-	}
-
-	if client.conn != nil {
-		err := client.conn.Close()
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			logger.Error("close-all-conn", logger.Fail)
-		}
-		client.conn = nil
-	}
 }
 
 func (client *Client) start_send() error {
