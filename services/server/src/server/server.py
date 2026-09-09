@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import socket
+import threading
 import logger
 import safe_socket
 import messages.messages as messages
@@ -23,26 +24,18 @@ class Server:
         self.server_host = server_host
         self.server_port = server_port
         self.connections = {}
+        self.threads = []
 
-    def _handle_client(self, client_socket):
+    def _handle_client(self, client_socket: socket.socket):
         action = "handle-client"
         message_amount = 0
+        client_connection = ClientConnection(client_socket, CONNECTING, 0)
         try:
-            logger.info(action, logger.LogResult.in_progress)
+            logger.info(action, logger.LogResult.in_progress) # type: ignore
             while True:
-                client_message = safe_socket.recv_all(
-                    client_socket, _ECHO_SERVER_MESSAGE_SIZE
-                )
-                if not client_message:
-                    logger.info(
-                        action,
-                        logger.LogResult.success,
-                        "messages-amount",
-                        message_amount,
-                    )
-                    return
-                message_amount += 1
-                safe_socket.send_all(client_socket, client_message)
+                msg = messages.receive_message(client_socket)
+                client_connection.agency_id = msg.Header.AgencyId
+                self.process_message(msg, client_connection)
         except Exception as e:
             logger.error(
                 action, logger.LogResult.fail, "messages-amount", message_amount
@@ -63,12 +56,17 @@ class Server:
                     raise e
                 logger.info(action, logger.LogResult.success)
 
-                self._handle_client(client_socket)
+                client_thread = threading.Thread(target= self._handle_client, args=(client_socket,))
+                client_thread.start()
+                self.threads.append(client_thread)
 
-    def process_message(self, message: messages.Message):
+    def process_message(self, message: messages.Message, client_connection: ClientConnection):
         match message.Header.Type:
             case messages.CONNECT:
-                self.process_connect(message)
+                if client_connection.status != CONNECTING:
+                    logger.error("process-message", logger.LogResult.fail, "invalid-client-status", client_connection.status)
+                    return
+                self.process_connect(message, client_connection)
 
             case messages.BET:
                 self.process_bet(message)
@@ -85,13 +83,18 @@ class Server:
             case messages.ERROR:
                 self.process_connect_end_ack(message)
 
-    def process_connect(self, message: messages.Message):
-        if message.Header.AgencyId in self.connections:
-            ack = messages.build_message(messages.CONNECT_ACK, 0, 0, message.Header.AgencyId, None)
-            self.send(ack)
-        else:
-            self.create_connection(message.Header.)
+            case _:
+                logger.error("process-message", logger.LogResult.fail, "unknown-message-type", message.Header.Type)
+                return
+
+    def process_connect(self, message: messages.Message, client_connection: ClientConnection):
+        ack = messages.build_message(messages.CONNECT_ACK, 0, 0, message.Header.AgencyId, None)
+        self.send(ack)
         return
+
+    def create_connection(self, agency_id: int, client_connection: ClientConnection):
+        client_connection.agency_id = agency_id
+        self.connections[agency_id] = client_connection
 
     def process_bet(self, message: messages.Message):
             return
