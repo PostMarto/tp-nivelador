@@ -64,6 +64,31 @@ def read(socket) -> Message:
 		Body=body,
 	)
 
+def build_message(kind: int, seq: int, ack: int, id: int, body: BodyMessage) -> Message:
+	payload_size = 0
+	name_size = 0
+	surname_size = 0
+	
+	if kind == BET and body != None:
+		payload_size = len(body.SurName)+len(body.Name)
+		name_size = len(body.Name)
+		surname_size = len(body.SurName)
+	
+	header = HeaderMessage(
+		Type=kind,
+		SeqNum=seq,
+		AckNum=ack,
+		AgencyId=id,
+		SizePayload=payload_size,
+		SizeName=name_size,
+		SizeSurName=surname_size,
+	)
+
+	return Message(
+		Header=header,
+		Body=body,
+	)
+		
 def message_to_bet(message: Message) -> Bet:
 	if message.Header.Type != BET:
 		raise ValueError("message is not a BET message")
