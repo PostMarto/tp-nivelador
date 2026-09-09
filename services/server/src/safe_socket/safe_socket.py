@@ -11,6 +11,8 @@ def recv_all(socket: socket.socket, size):
     while received < size:
         try:
             chunk = socket.recv(size - received)
+            if not chunk:
+                raise ConnectionError("connection closed while receiving data")
         except OSError:
             logger.error("receive-all-error", logger.LogResult.fail)
             raise

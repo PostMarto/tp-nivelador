@@ -1,5 +1,6 @@
 
 from dataclasses import dataclass
+import socket
 import string
 import safe_socket
 from lottery.bet import Bet
@@ -41,13 +42,13 @@ class BodyMessage:
 	Year:    int
 	Month:   int
 	Day:     int
-	Name:    string # max 50 bytes
-	SurName: string # max 50 bytes
+	Name:    str # type: ignore # max 50 bytes
+	SurName: str # type: ignore # max 50 bytes
 
 @dataclass
 class Message:
 	Header: HeaderMessage
-	Body:   BodyMessage
+	Body:   BodyMessage | None
 
 def read(socket) -> Message:
 	header_data = safe_socket.recv_all(socket, HEADER_SIZE)
@@ -64,15 +65,20 @@ def read(socket) -> Message:
 		Body=body,
 	)
 
-def build_message(kind: int, seq: int, ack: int, id: int, body: BodyMessage) -> Message:
+def send(socket: socket.socket, message: Message):
+	binary_message = serialize(message)
+	safe_socket.send_all(socket, binary_message)
+	
+
+def build_message(kind: int, seq: int, ack: int, id: int, body: BodyMessage | None) -> Message:
 	payload_size = 0
 	name_size = 0
 	surname_size = 0
 	
-	if kind == BET and body != None:
-		payload_size = len(body.SurName)+len(body.Name)
-		name_size = len(body.Name)
-		surname_size = len(body.SurName)
+	if body is not None:
+		name_size = len(body.Name.encode("utf-8"))
+		surname_size = len(body.SurName.encode("utf-8"))
+		payload_size = BODY_MIN_SIZE + name_size + surname_size
 	
 	header = HeaderMessage(
 		Type=kind,

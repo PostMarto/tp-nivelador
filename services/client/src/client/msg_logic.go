@@ -3,52 +3,52 @@ package client
 import (
 	"errors"
 	"fmt"
+	"net"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/messages"
 )
 
-func (client *Client) process_message(message messages.Message) {
+func (client *Client) process_message(message messages.Message) error {
 	switch message.Header.Type {
 	case messages.CONNECT_ACK:
 		if client.status == CONNECTING {
 			client.status = SENDING
-			client.start_send()
+			return client.start_send()
 		}
 
 	case messages.BET_ACK:
 		if client.status == SENDING {
-			client.receive_bet_ack(message.Header.AckNum)
+			return client.receive_bet_ack(message.Header.AckNum)
 		}
 
 	case messages.WINNER:
 		if client.status == WAITING_WINNER {
-			err := client.save_winner(message)
-			if err == nil {
-				client.send_winner_ack()
+			if err := client.save_winner(message); err != nil {
+				return err
 			}
+			return client.send_winner_ack()
 		}
 
 	case messages.CONNECT_END:
-		err := client.send_close_ack()
-		if err == nil {
-			client.status = CLOSING
-			client.close_all()
+		if err := client.send_close_ack(); err != nil {
+			return err
 		}
+		client.status = CLOSING
 
 	case messages.ERROR:
-
+		return errors.New("server reported an error")
 	}
-
+	return nil
 }
 
 func (client *Client) save_winner(message messages.Message) error {
-	if message.Body != nil {
+	if message.Body == nil {
 		logger.Error("save-winner", logger.Fail)
 		return errors.New("No body on the message")
 	}
 	body := message.Body
-	_, err := fmt.Fprintf(client.writer, "%s, %s, %d, %04d-%02d-%02d, %d\n",
+	_, err := fmt.Fprintf(client.writer, "%s,%s,%d,%04d-%02d-%02d,%d\n",
 		body.Name,
 		body.SurName,
 		body.Dni,
@@ -58,10 +58,10 @@ func (client *Client) save_winner(message messages.Message) error {
 		body.Bet,
 	)
 
-	if err != nil {
+	if err == nil {
 		err = client.writer.Flush()
 	}
-	if err == nil {
+	if err != nil {
 		logger.Error("save-winner", logger.Fail)
 		return errors.New("Could not write to file")
 	}
@@ -74,8 +74,7 @@ func (client *Client) send_winner_ack() error {
 		logger.Error("send-winner-ack", logger.Fail)
 		return errors.New("Could not create message")
 	}
-	client.send(message)
-	return nil
+	return client.send(message)
 }
 
 func (client *Client) send_close_ack() error {
@@ -84,8 +83,7 @@ func (client *Client) send_close_ack() error {
 		logger.Error("send-connect-end-ack", logger.Fail)
 		return errors.New("Could not create message")
 	}
-	client.send(message)
-	return nil
+	return client.send(message)
 }
 
 func (client *Client) send_bet_end() error {
@@ -94,8 +92,7 @@ func (client *Client) send_bet_end() error {
 		logger.Error("send-bet-end", logger.Fail)
 		return errors.New("Could not create message")
 	}
-	client.send(message)
-	return nil
+	return client.send(message)
 }
 
 func (client *Client) close_all() {
@@ -125,35 +122,48 @@ func (client *Client) close_all() {
 
 	if client.conn != nil {
 		err := client.conn.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Error("close-all-conn", logger.Fail)
 		}
 		client.conn = nil
 	}
 }
 
-func (client *Client) start_send() {
-	client.status = SENDING
-	for len(client.messages_on_flight) < WINDOW_SIZE {
-		if !client.reader.Scan() {
+func (client *Client) start_send() error {
+	if client.status != SENDING {
+		return nil
+	}
+	for !client.input_done && len(client.messages_on_flight) < WINDOW_SIZE {
+		if client.reader.Scan() {
 			line := client.reader.Text()
 			message, err := messages.Build_message(messages.BET, client.get_next_seq_num(), 0, client.id, line)
 			if err != nil {
 				logger.Error("start-send-build-message", logger.Fail)
-				continue
+				return err
 			}
-			client.send(message)
+			if err := client.send(message); err != nil {
+				return err
+			}
 		} else {
-			client.send_bet_end()
-			return
+			if err := client.reader.Err(); err != nil {
+				return err
+			}
+			client.input_done = true
 		}
 	}
+	if client.input_done && len(client.messages_on_flight) == 0 {
+		if err := client.send_bet_end(); err != nil {
+			return err
+		}
+		client.status = WAITING_WINNER
+	}
+	return nil
 }
 
-func (client *Client) receive_bet_ack(seq_num uint8) {
+func (client *Client) receive_bet_ack(seq_num uint8) error {
 	message, exist := client.messages_on_flight[seq_num]
 	if !exist {
-		return
+		return nil
 	}
 
 	message.AckReceived = true
@@ -169,5 +179,5 @@ func (client *Client) receive_bet_ack(seq_num uint8) {
 		client.window_base++
 	}
 
-	client.start_send()
+	return client.start_send()
 }

@@ -11,12 +11,9 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
 )
 
-const CONNECTION_ATTEMPTS_MAX = 3
+const CONNECTION_ATTEMPTS_MAX = 50
 const CONNECTION_ATTEMPS_DELAY_MS = 200
-
-const ECHO_CLIENT_BUFFER_SIZE = 512
-const ECHO_CLIENT_MESSAGE_AMOUNT = 3
-const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
+const CONNECTION_TIMEOUT = time.Second
 
 const WINDOW_SIZE = 10
 const MESSAGE_QUEUE_SIZE = 15
@@ -55,6 +52,7 @@ type Client struct {
 	writer             *bufio.Writer
 	id                 uint32
 	window_base        uint8
+	input_done         bool
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
@@ -66,16 +64,23 @@ func NewClient(config ClientConfig) (*Client, error) {
 
 	client := &Client{conn: conn, config: config}
 	id, err := messages.Parse_string_uint(client.config.AgencyId)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
 
 	input, err := os.Open(client.config.InputFile)
 	if err != nil {
 		logger.Error("open-input-file", logger.Fail, client.config.InputFile)
+		conn.Close()
 		return nil, err
 	}
 
 	output, err := os.Create(client.config.OutputFile)
 	if err != nil {
 		logger.Error("open-output-file", logger.Fail, client.config.OutputFile)
+		input.Close()
+		conn.Close()
 		return nil, err
 	}
 
@@ -97,10 +102,12 @@ func connectToServer(host, port string) (net.Conn, error) {
 
 	logger.Info(action, logger.InProgress)
 	for i := range CONNECTION_ATTEMPTS_MAX {
-		conn, err = net.Dial("tcp", host+":"+port)
+		conn, err = net.DialTimeout("tcp", net.JoinHostPort(host, port), CONNECTION_TIMEOUT)
 		if err != nil {
-			logger.Warn(action, logger.Fail, "attempt", i)
-			time.Sleep(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond)
+			logger.Warn(action, logger.Fail, "attempt", i+1, "err", err)
+			if i+1 < CONNECTION_ATTEMPTS_MAX {
+				time.Sleep(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond)
+			}
 			continue
 		}
 
@@ -111,25 +118,26 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
-func (client *Client) connect() {
+func (client *Client) connect() error {
 	connect_message, err := messages.Build_message(messages.CONNECT, 0, 0, uint32(client.id), "")
 	if err != nil {
-
+		return err
 	}
-	client.send(connect_message)
+	return client.send(connect_message)
 }
 
-func (client *Client) send(message messages.Message) {
+func (client *Client) send(message messages.Message) error {
 	binary_message := messages.Serialize(message)
 	if err := safe_socket.SendAll(client.conn, binary_message); err != nil {
 		logger.Error("send-message", logger.Fail)
-		return
+		return err
 	}
 
 	if message.Header.Type == messages.BET {
 		seq_num := message.Header.SeqNum
 		client.messages_on_flight[seq_num] = SentMessage{message, false}
 	}
+	return nil
 }
 
 func (client *Client) get_next_seq_num() uint8 {
@@ -137,26 +145,59 @@ func (client *Client) get_next_seq_num() uint8 {
 }
 
 func (client *Client) Run() error {
+	defer client.close_all()
+	if err := client.connect(); err != nil {
+		return err
+	}
+
 	message_queue := make(chan messages.Message, MESSAGE_QUEUE_SIZE)
 	processor_done := make(chan struct{})
+	var process_err error
 
 	go func() {
 		defer close(processor_done)
+		defer client.conn.Close() // Unblock the reader when processing finishes.
 
 		for message := range message_queue {
-			client.process_message(message)
+			if err := client.process_message(message); err != nil {
+				process_err = err
+				return
+			}
+			if client.status == CLOSING {
+				return
+			}
 		}
 	}()
 
-	client.connect()
-
+	var read_err error
+read_loop:
 	for {
 		received_message, err := messages.Read(client.conn)
 		if err != nil {
-			logger.Error("deserialize-response", logger.Fail)
-			continue
+			read_err = err
+			break
 		}
-		message_queue <- received_message
+		select {
+		case message_queue <- received_message:
+			if received_message.Header.Type == messages.CONNECT_END || received_message.Header.Type == messages.ERROR {
+				break read_loop
+			}
+		case <-processor_done:
+			break read_loop
+		}
 	}
 
+	if read_err != nil {
+		client.conn.Close()
+	}
+
+	close(message_queue)
+	<-processor_done
+	if process_err != nil {
+		return process_err
+	}
+	if client.status == CLOSING {
+		return nil
+	}
+	return read_err
 }
