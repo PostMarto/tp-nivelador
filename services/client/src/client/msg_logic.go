@@ -13,7 +13,12 @@ func (client *Client) process_message(message messages.Message) error {
 	case messages.CONNECT_ACK:
 		if client.status == CONNECTING {
 			client.status = SENDING
-			return client.start_send()
+			return client.next_batch()
+		}
+
+	case messages.BATCH_ACK:
+		if client.status == SENDING {
+			return client.receive_batch_ack()
 		}
 
 	case messages.BET_ACK:
@@ -36,6 +41,9 @@ func (client *Client) process_message(message messages.Message) error {
 		client.status = CLOSING
 
 	case messages.ERROR:
+		if client.status == SENDING {
+			return client.resend_last_batch()
+		}
 		return errors.New("server reported an error")
 	}
 	return nil
@@ -123,6 +131,54 @@ func (client *Client) start_send() error {
 		client.status = WAITING_WINNER
 	}
 	return nil
+}
+
+func (client *Client) next_batch() error {
+	if client.status != SENDING {
+		return nil
+	}
+
+	messages_in_batch := make([]messages.Message, 0, client.config.BatchSize)
+
+	for len(messages_in_batch) < client.config.BatchSize {
+		if !client.reader.Scan() {
+			if err := client.reader.Err(); err != nil {
+				return err
+			}
+			client.input_done = true
+			break
+		}
+
+		message, err := messages.Build_message(messages.BET, uint8(len(messages_in_batch)), 0, client.id, client.reader.Text())
+		if err != nil {
+			logger.Error("send-batch-build-message", logger.Fail)
+			return err
+		}
+		messages_in_batch = append(messages_in_batch, message)
+	}
+
+	if len(messages_in_batch) > 0 {
+		batch := messages.Build_batch(messages_in_batch)
+		return client.send_batch(batch)
+	}
+
+	if client.input_done {
+		if err := client.send_bet_end(); err != nil {
+			return err
+		}
+		client.status = WAITING_WINNER
+	}
+
+	return nil
+}
+
+func (client *Client) receive_batch_ack() error {
+	if client.last_batch == nil {
+		return errors.New("received batch ack without a pending batch")
+	}
+
+	client.last_batch = nil
+	return client.next_batch()
 }
 
 func (client *Client) receive_bet_ack(seq_num uint8) error {

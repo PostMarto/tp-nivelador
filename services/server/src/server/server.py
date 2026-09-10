@@ -44,26 +44,37 @@ class Server:
         self.sockets = []
         self.server_socket: socket.socket | None = None
 
-    def _handle_client(self, client_socket: socket.socket, queue: queue.Queue):
+    def _handle_client(self, client_socket: socket.socket, lottery_queue: queue.Queue):
         action = "handle-client"
         message_amount = 0
         client_connection = ClientConnection(client_socket, CONNECTING, 0)
         try:
-            logger.info(action, logger.LogResult.in_progress) # type: ignore
+            logger.info(action, logger.LogResult.in_progress)
             while client_connection.status != CLOSING and self.status != CLOSING:
-                msg = messages.read(client_socket)
+                incoming = messages.read(client_socket)
+
                 if self.status == CLOSING:
                     break
-                self.process_message(msg, client_connection, queue)
-        except Exception as e:
-            logger.error(
-                action, logger.LogResult.fail, "messages-amount", message_amount, "err", e
-            )
+
+                if isinstance(incoming, messages.Batch):
+                    message_amount += len(incoming.Messages)
+                    try:
+                        self.process_batch(incoming, client_connection, lottery_queue)
+                    except Exception as error:
+                        logger.error("process-batch", logger.LogResult.fail, "err", error)
+                        error_message = messages.build_message(messages.ERROR, 0, 0, client_connection.agency_id, None)
+                        messages.send(client_socket, error_message)
+                else:
+                    message_amount += 1
+                    self.process_message(incoming, client_connection, lottery_queue)
+
+        except Exception as error:
+            logger.error(action, logger.LogResult.fail, "messages-amount", message_amount, "err", error)
             try:
-                error = messages.build_message(messages.ERROR, 0, 0, client_connection.agency_id, None)
-                messages.send(client_socket, error)
+                error_message = messages.build_message(messages.ERROR, 0, 0, client_connection.agency_id, None)
+                messages.send(client_socket, error_message)
             except OSError:
-                pass  
+                pass
         finally:
             client_socket.close()
 
@@ -195,15 +206,46 @@ class Server:
         messages.send(client_connection.socket, ack)
         client_connection.status = SENDING
 
-    def process_bet(self, message: messages.Message, client_connection: ClientConnection, lottery_queue: queue.Queue):
+    def process_batch(self, batch: messages.Batch, client_connection: ClientConnection, lottery_queue: queue.Queue):
+        if len(batch.Messages) == 0:
+            raise ValueError("received an empty batch")
+
+        if client_connection.status != SENDING:
+            raise ValueError("client is not in SENDING status")
+
+        agency_id = batch.Messages[0].Header.AgencyId
+
+        for message in batch.Messages:
+            if message.Header.Type != messages.BET:
+                raise ValueError("batch contains a non-BET message")
+
+            if message.Header.AgencyId != agency_id:
+                raise ValueError("batch contains different agency IDs")
+
+            if message.Header.AgencyId != client_connection.agency_id:
+                raise ValueError("batch agency ID does not match client")
+
+            if message.Body is None:
+                raise ValueError("BET message has no body")
+
+        for message in batch.Messages:
+            self.process_bet(message, client_connection, lottery_queue, False)
+
+        batch_ack = messages.build_message(messages.BATCH_ACK, 0, 0, agency_id, None)
+        messages.send(client_connection.socket, batch_ack)
+
+    def process_bet(self, message: messages.Message, client_connection: ClientConnection, lottery_queue: queue.Queue, send_ack: bool = True):
         bet = messages.message_to_bet(message)
         result_queue = queue.Queue(maxsize=1)
         lottery_queue.put((bet, result_queue))
         error = result_queue.get()
+
         if error is not None:
             raise error
-        ack = messages.build_message(messages.BET_ACK, message.Header.SeqNum, message.Header.SeqNum, message.Header.AgencyId, message.Body)
-        messages.send(client_connection.socket, ack)
+
+        if send_ack:
+            ack = messages.build_message(messages.BET_ACK, message.Header.SeqNum, message.Header.SeqNum, message.Header.AgencyId, message.Body)
+            messages.send(client_connection.socket, ack)
 
     def process_bet_end(self, message: messages.Message, client_connection: ClientConnection, queue: queue.Queue):
         queue.join()

@@ -2,8 +2,6 @@ package safe_socket
 
 import (
 	"io"
-
-	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 )
 
 func SendAll(socket io.Writer, bytes []byte) error {
@@ -11,12 +9,10 @@ func SendAll(socket io.Writer, bytes []byte) error {
 	for len(bytes) > 0 {
 		n, err := socket.Write(bytes)
 		if err != nil {
-			logger.Error("send-all-error", logger.Fail)
 			return err
 		}
 		if n == 0 {
-			logger.Error("send-all-short-write", logger.Fail)
-			return io.ErrShortWrite
+			continue
 		}
 		bytes = bytes[n:]
 	}
@@ -35,11 +31,10 @@ func RecvAll(socket io.Reader, size int) ([]byte, error) {
 			if received == size {
 				return buff, nil
 			}
-			logger.Error("receive-all-error", logger.Fail)
 			return buff[:received], err
 		}
 		if n == 0 {
-			logger.Error("reveice-all-short-read", logger.Fail)
+			continue
 		}
 	}
 

@@ -109,6 +109,7 @@ func add_clients(amount_clients int) {
       - AGENCY_ID=%d
       - SERVER_HOST=server
       - SERVER_PORT=%s
+      - BATCH_SIZE=5
       - INPUT_FILE=/input/input-%d.csv
       - OUTPUT_FILE=/output/output-%d.csv
     volumes:

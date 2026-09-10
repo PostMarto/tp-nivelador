@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -38,6 +39,7 @@ type ClientConfig struct {
 	AgencyId   string
 	InputFile  string
 	OutputFile string
+	BatchSize  int
 }
 
 type SentMessage struct {
@@ -57,7 +59,7 @@ type Client struct {
 	id                 uint32
 	window_base        uint8
 	input_done         bool
-	status_mutex       sync.Mutex
+	last_batch         *messages.Batch
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
@@ -145,80 +147,102 @@ func (client *Client) send(message messages.Message) error {
 	return nil
 }
 
+func (client *Client) send_batch(batch messages.Batch) error {
+	serialized_batch := messages.Serialize_batch(batch)
+
+	if err := safe_socket.SendAll(client.conn, serialized_batch); err != nil {
+		logger.Error("send-batch", logger.Fail)
+		return err
+	}
+
+	client.last_batch = &batch
+	return nil
+}
+
+func (client *Client) resend_last_batch() error {
+	if client.last_batch == nil {
+		return errors.New("there is no batch to resend")
+	}
+
+	return client.send_batch(*client.last_batch)
+}
+
 func (client *Client) get_next_seq_num() uint8 {
 	return client.window_base + uint8(len(client.messages_on_flight))
 }
 
 func (client *Client) Run() error {
-	sigterm_listener := make(chan os.Signal, 1)
-	signal.Notify(sigterm_listener, os.Interrupt, syscall.SIGTERM)
+	context, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var work_group sync.WaitGroup
 
 	message_queue := make(chan messages.Message, MESSAGE_QUEUE_SIZE)
 	processor_done := make(chan struct{})
-
-	go func() {
-		<-sigterm_listener
-		logger.Info("sigterm-listener", logger.InProgress)
-		client.status_mutex.Lock()
-		defer client.status_mutex.Unlock()
-		client.status = CLOSING
-		<-processor_done
-		client.Close_all()
-	}()
 
 	defer client.Close_all()
 	if err := client.connect(); err != nil {
 		return err
 	}
 
-	var process_err error
+	work_group.Add(1)
 
 	go func() {
 		defer close(processor_done)
 		defer client.conn.Close()
+		defer work_group.Done()
 
 		for message := range message_queue {
 			if err := client.process_message(message); err != nil {
-				process_err = err
-				return
-			}
-			if client.status == CLOSING {
 				return
 			}
 		}
 	}()
 
-	var read_err error
-read_loop:
-	for {
-		received_message, err := messages.Read(client.conn)
-		if err != nil {
-			read_err = err
-			break
-		}
+	go func() {
 		select {
-		case message_queue <- received_message:
-			if received_message.Header.Type == messages.CONNECT_END || received_message.Header.Type == messages.ERROR {
-				break read_loop
-			}
+		case <-context.Done():
+			_ = client.conn.Close()
 		case <-processor_done:
-			break read_loop
 		}
+	}()
+
+	read_err := client.producer(message_queue, processor_done)
+
+	if read_err != nil && context.Err() == nil {
+		logger.Error("producer-error", logger.Fail)
 	}
 
-	if read_err != nil {
-		client.conn.Close()
+	work_group.Wait()
+
+	if context.Err() != nil {
+		return nil
 	}
 
-	close(message_queue)
-	<-processor_done
-	if process_err != nil {
-		return process_err
-	}
 	if client.status == CLOSING {
 		return nil
 	}
+
 	return read_err
+}
+
+func (client *Client) producer(message_queue chan messages.Message, processor_done chan struct{}) error {
+	defer close(message_queue)
+	for {
+		received_messages, err := messages.Read(client.conn)
+		if err != nil {
+			return err
+		}
+		for _, received_message := range received_messages {
+			select {
+			case message_queue <- received_message:
+				if received_message.Header.Type == messages.CONNECT_END {
+					return nil
+				}
+			case <-processor_done:
+				return nil
+			}
+		}
+	}
 }
 
 func (client *Client) Close_all() {

@@ -31,6 +31,7 @@ services:
       - AGENCY_ID=0
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - BATCH_SIZE=5
       - INPUT_FILE=/input/input-1.csv
       - OUTPUT_FILE=/output/output-1.csv
     volumes:
@@ -50,6 +51,7 @@ services:
       - AGENCY_ID=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - BATCH_SIZE=5
       - INPUT_FILE=/input/input-2.csv
       - OUTPUT_FILE=/output/output-2.csv
     volumes:
@@ -69,6 +71,7 @@ services:
       - AGENCY_ID=2
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - BATCH_SIZE=5
       - INPUT_FILE=/input/input-3.csv
       - OUTPUT_FILE=/output/output-3.csv
     volumes:
@@ -88,6 +91,7 @@ services:
       - AGENCY_ID=3
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - BATCH_SIZE=5
       - INPUT_FILE=/input/input-4.csv
       - OUTPUT_FILE=/output/output-4.csv
     volumes:
@@ -107,6 +111,7 @@ services:
       - AGENCY_ID=4
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - BATCH_SIZE=5
       - INPUT_FILE=/input/input-5.csv
       - OUTPUT_FILE=/output/output-5.csv
     volumes:

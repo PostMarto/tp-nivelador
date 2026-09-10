@@ -1,5 +1,4 @@
 import socket
-import logger
 
 # TODO: Complete with a short-read/short-write tolerant implementation
 
@@ -14,7 +13,6 @@ def recv_all(socket: socket.socket, size):
             if not chunk:
                 raise ConnectionError("connection closed while receiving data")
         except OSError:
-            logger.error("receive-all-error", logger.LogResult.fail)
             raise
 
         buffer[received:received + len(chunk)] = chunk
@@ -29,11 +27,9 @@ def send_all(socket: socket.socket, bytes):
         try:
             sent = socket.send(remaining)
         except OSError:
-            logger.error("send-all-error", logger.LogResult.fail)
             raise
 
         if sent == 0:
-            logger.error("send-all-short-write", logger.LogResult.fail)
-            raise ConnectionError("socket made no progress while sending data")
+            continue
 
         remaining = remaining[sent:]

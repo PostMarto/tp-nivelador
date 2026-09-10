@@ -14,12 +14,13 @@ import (
 type MessageType uint8
 
 const (
-	ITEMS_PER_DATE = 3
-	ITEMS_PER_LINE = 5
-	MAX_NAME_LEN   = 50
-	UINT           = 64
-	BODY_MIN_SIZE  = 12 // en bytes
-	HEADER_SIZE    = 11 // en bytes
+	ITEMS_PER_DATE      = 3
+	ITEMS_PER_LINE      = 5
+	MAX_NAME_LEN        = 50
+	UINT                = 64
+	BODY_MIN_SIZE       = 12 // en bytes
+	MESSAGE_HEADER_SIZE = 11 // en bytes
+	BATCH_HEADER_SIZE   = 3
 )
 
 const (
@@ -33,6 +34,8 @@ const (
 const (
 	CONNECT         MessageType = 1   // 00000001
 	CONNECT_ACK     MessageType = 129 // 10000001
+	BATCH           MessageType = 16  // 00010000
+	BATCH_ACK       MessageType = 144 // 10010000
 	BET             MessageType = 64  // 01000000
 	BET_ACK         MessageType = 192 // 11000000
 	BET_END         MessageType = 66  // 01000010
@@ -42,6 +45,16 @@ const (
 	CONNECT_END_ACK MessageType = 131 // 10000011
 	ERROR           MessageType = 255 // 11111111
 )
+
+type Batch struct {
+	Header   HeaderBatch
+	Messages []Message
+}
+
+type HeaderBatch struct {
+	Type      MessageType
+	SizeBatch uint16
+}
 
 type HeaderMessage struct {
 	Type        MessageType
@@ -68,8 +81,72 @@ type Message struct {
 	Body   *BodyMessage
 }
 
-func Read(socket io.Reader) (Message, error) {
-	header_data, err := safe_socket.RecvAll(socket, HEADER_SIZE)
+func Read(socket io.Reader) ([]Message, error) {
+	header_data, err := safe_socket.RecvAll(socket, BATCH_HEADER_SIZE)
+	if err != nil {
+		logger.Warn("read-message-header", logger.Fail)
+		return nil, err
+	}
+	header, err := deserialize_batch_header(header_data)
+	if err != nil {
+		logger.Warn("deserialize-message-header", logger.Fail)
+		return nil, err
+	}
+
+	var messages []Message
+
+	for i := 0; i < int(header.SizeBatch); i++ {
+		message, err := read_message(socket)
+		if err != nil {
+			logger.Warn("reading-messages", logger.Fail)
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+
+	return messages, nil
+
+}
+
+func Build_batch(messages []Message) Batch {
+	return Batch{
+		Header: HeaderBatch{
+			Type:      BATCH,
+			SizeBatch: uint16(len(messages)),
+		},
+		Messages: messages,
+	}
+}
+
+func Serialize_batch(batch Batch) []byte {
+	data := make([]byte, BATCH_HEADER_SIZE)
+
+	data[0] = byte(batch.Header.Type)
+	binary.BigEndian.PutUint16(data[1:3], batch.Header.SizeBatch)
+
+	for _, message := range batch.Messages {
+		data = append(data, Serialize(message)...)
+	}
+
+	return data
+}
+
+func deserialize_batch_header(data []byte) (HeaderBatch, error) {
+
+	if len(data) < BATCH_HEADER_SIZE {
+		logger.Warn("deserialize-message-header", logger.Fail)
+		return HeaderBatch{}, errors.New("message is smaller than header")
+	}
+
+	header := HeaderBatch{
+		Type:      MessageType(data[0]),
+		SizeBatch: binary.BigEndian.Uint16(data[1:3]),
+	}
+	return header, nil
+}
+
+func read_message(socket io.Reader) (Message, error) {
+	header_data, err := safe_socket.RecvAll(socket, MESSAGE_HEADER_SIZE)
 	if err != nil {
 		logger.Warn("read-message-header", logger.Fail)
 		return Message{}, err
@@ -280,9 +357,9 @@ func Serialize(message Message) []byte {
 	var data []byte
 
 	if message.Body == nil {
-		data = make([]byte, HEADER_SIZE)
+		data = make([]byte, MESSAGE_HEADER_SIZE)
 	} else {
-		data = make([]byte, HEADER_SIZE+header.SizePayload)
+		data = make([]byte, MESSAGE_HEADER_SIZE+header.SizePayload)
 	}
 
 	data[0] = byte(header.Type)
@@ -295,7 +372,7 @@ func Serialize(message Message) []byte {
 
 	if message.Body != nil {
 		body := message.Body
-		offset := HEADER_SIZE
+		offset := MESSAGE_HEADER_SIZE
 
 		binary.BigEndian.PutUint32(data[offset:offset+4], body.Dni)
 		offset += 4
@@ -317,7 +394,7 @@ func Serialize(message Message) []byte {
 
 func deserialize_header(data []byte) (HeaderMessage, error) {
 
-	if len(data) < HEADER_SIZE {
+	if len(data) < MESSAGE_HEADER_SIZE {
 		logger.Warn("deserialize-message-header", logger.Fail)
 		return HeaderMessage{}, errors.New("message is smaller than header")
 	}
@@ -392,7 +469,7 @@ func Deserialize(data []byte) (Message, error) {
 		}, nil
 	}
 
-	body, err := deserialize_body(data[HEADER_SIZE:], header)
+	body, err := deserialize_body(data[MESSAGE_HEADER_SIZE:], header)
 	if err != nil {
 		return Message{}, err
 	}

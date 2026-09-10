@@ -6,6 +6,7 @@ import (
 
 	client "github.com/7574-sistemas-distribuidos/tp-nivelador/src/client"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/messages"
 )
 
 func loadConfig() (client.ClientConfig, error) {
@@ -34,12 +35,20 @@ func loadConfig() (client.ClientConfig, error) {
 		return client.ClientConfig{}, errors.New("OUTPUT_FILE environment variable is required")
 	}
 
+	batchConfig := os.Getenv("BATCH_SIZE")
+	if batchConfig == "" {
+		return client.ClientConfig{}, errors.New("OUTPUT_FILE environment variable is required")
+	}
+
+	batchSize, _ := messages.Parse_string_uint(batchConfig)
+
 	return client.ClientConfig{
 		ServerHost: serverHost,
 		ServerPort: serverPort,
 		AgencyId:   agencyId,
 		InputFile:  inputFile,
 		OutputFile: outputFile,
+		BatchSize:  int(batchSize),
 	}, nil
 }
 

@@ -5,8 +5,9 @@ import string
 import safe_socket
 from lottery.bet import Bet
 
-BODY_MIN_SIZE  = 12 # en bytes
-HEADER_SIZE    = 11 # en bytes
+BODY_MIN_SIZE = 12
+MESSAGE_HEADER_SIZE = 11
+BATCH_HEADER_SIZE = 3
 
 NAME_FIELD      = 0
 SURNAME_FIELD   = 1
@@ -14,16 +15,18 @@ DNI_FIELD       = 2
 DATE_FIELD      = 3
 BET_FIELD       = 4
 
-CONNECT          = 1   # 00000001
-CONNECT_ACK      = 129 # 10000001
-BET              = 64  # 01000000
-BET_ACK          = 192 # 11000000
-BET_END          = 66  # 01000010
-WINNER           = 32  # 00100000
-WINNER_ACK       = 160 # 10100000
-CONNECT_END      = 3   # 00000011
-CONNECT_END_ACK  = 131 # 10000011
-ERROR            = 255 # 11111111
+CONNECT          = 1
+CONNECT_ACK      = 129
+BATCH            = 16
+BATCH_ACK        = 144
+BET              = 64
+BET_ACK          = 192
+BET_END          = 66
+WINNER           = 32
+WINNER_ACK       = 160
+CONNECT_END      = 3
+CONNECT_END_ACK  = 131
+ERROR            = 255
 
 @dataclass
 class HeaderMessage:
@@ -50,10 +53,41 @@ class Message:
 	Header: HeaderMessage
 	Body:   BodyMessage | None
 
-def read(socket) -> Message:
-	header_data = safe_socket.recv_all(socket, HEADER_SIZE)
-	header = deserialize_head(header_data)
+@dataclass
+class HeaderBatch:
+	Type: int
+	SizeBatch: int
 
+@dataclass
+class Batch:
+	Header: HeaderBatch
+	Messages: list[Message]
+
+def read(socket) -> Message | Batch:
+	header_data = safe_socket.recv_all(socket, BATCH_HEADER_SIZE)
+
+	if header_data[0] == BATCH:
+		header = deserialize_batch_header(header_data)
+		if header.SizeBatch == 0:
+			raise ValueError("batch cannot be empty")
+
+		messages_in_batch = []
+		for _ in range(header.SizeBatch):
+			messages_in_batch.append(read_message(socket))
+
+		return Batch(
+			Header=header,
+			Messages=messages_in_batch,
+		)
+
+	return read_message(socket, header_data)
+
+def read_message(socket, header_data: bytes = b"") -> Message:
+	if len(header_data) > MESSAGE_HEADER_SIZE:
+		raise ValueError("message header prefix is too large")
+
+	header_data += safe_socket.recv_all(socket, MESSAGE_HEADER_SIZE - len(header_data))
+	header = deserialize_head(header_data)
 	body = None
 
 	if header.SizePayload > 0:
@@ -66,8 +100,46 @@ def read(socket) -> Message:
 	)
 
 def send(socket: socket.socket, message: Message):
-	binary_message = serialize(message)
-	safe_socket.send_all(socket, binary_message)
+	batch = build_batch([message])
+	binary_batch = serialize_batch(batch)
+	safe_socket.send_all(socket, binary_batch)
+
+def build_batch(messages_in_batch: list[Message]) -> Batch:
+	return Batch(
+		Header=HeaderBatch(
+			Type=BATCH,
+			SizeBatch=len(messages_in_batch),
+		),
+		Messages=messages_in_batch,
+	)
+
+def serialize_batch(batch: Batch) -> bytes:
+	if batch.Header.SizeBatch != len(batch.Messages):
+		raise ValueError("batch size does not match message count")
+
+	if batch.Header.SizeBatch > 0xFFFF:
+		raise ValueError("batch contains too many messages")
+
+	data = bytearray(BATCH_HEADER_SIZE)
+	data[0] = batch.Header.Type
+	data[1:3] = batch.Header.SizeBatch.to_bytes(2, byteorder="big")
+
+	for message in batch.Messages:
+		data.extend(serialize(message))
+
+	return bytes(data)
+
+def deserialize_batch_header(data: bytes) -> HeaderBatch:
+	if len(data) != BATCH_HEADER_SIZE:
+		raise ValueError("invalid batch header size")
+
+	if data[0] != BATCH:
+		raise ValueError("invalid batch message type")
+
+	return HeaderBatch(
+		Type=data[0],
+		SizeBatch=int.from_bytes(data[1:3], byteorder="big"),
+	)
 	
 
 def build_message(kind: int, seq: int, ack: int, id: int, body: BodyMessage | None) -> Message:
@@ -122,7 +194,7 @@ def serialize(message: Message) -> bytes:
 	return data
 
 def serialize_head(header: HeaderMessage) -> bytes:
-	data = bytearray(HEADER_SIZE)
+	data = bytearray(MESSAGE_HEADER_SIZE)
 
 	data[0] = header.Type
 	data[1] = header.SeqNum
@@ -172,7 +244,7 @@ def deserialize(data: bytes) -> Message:
 			Body=None,
 		)
 
-	body = deserialize_body(data[HEADER_SIZE:], header)
+	body = deserialize_body(data[MESSAGE_HEADER_SIZE:], header)
 
 	return Message(
 		Header=header,
@@ -180,7 +252,7 @@ def deserialize(data: bytes) -> Message:
 	)
 
 def deserialize_head(data: bytes) -> HeaderMessage:
-	if len(data) < HEADER_SIZE:
+	if len(data) < MESSAGE_HEADER_SIZE:
 		raise ValueError("header too small")
 	
 	return HeaderMessage(
