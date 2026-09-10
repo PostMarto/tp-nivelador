@@ -118,14 +118,46 @@ func Build_batch(messages []Message) Batch {
 	}
 }
 
+func Build_batch_buffer(batch_size int) []byte {
+	size_message := MESSAGE_HEADER_SIZE + BODY_MIN_SIZE + MAX_NAME_LEN*2
+	size_batch := BATCH_HEADER_SIZE + batch_size*size_message
+	return make([]byte, BATCH_HEADER_SIZE, size_batch)
+}
+
+func Set_batch_size(data []byte, batch_size uint16) {
+	data[0] = byte(BATCH)
+	binary.BigEndian.PutUint16(data[1:3], batch_size)
+}
+
+func Append_bet(data []byte, seq uint8, id uint32, info_body string) ([]byte, error) {
+	body, err := build_body(info_body)
+	if err != nil {
+		return data, err
+	}
+
+	header := build_header(BET, seq, 0, id, &body)
+	message := Message{
+		Header: header,
+		Body:   &body,
+	}
+
+	return serialize_into(data, message), nil
+}
+
 func Serialize_batch(batch Batch) []byte {
-	data := make([]byte, BATCH_HEADER_SIZE)
+	size_batch := BATCH_HEADER_SIZE
+
+	for _, message := range batch.Messages {
+		size_batch += serialized_message_size(message)
+	}
+
+	data := make([]byte, BATCH_HEADER_SIZE, size_batch)
 
 	data[0] = byte(batch.Header.Type)
 	binary.BigEndian.PutUint16(data[1:3], batch.Header.SizeBatch)
 
 	for _, message := range batch.Messages {
-		data = append(data, Serialize(message)...)
+		data = serialize_into(data, message)
 	}
 
 	return data
@@ -352,44 +384,56 @@ func build_body(line string) (BodyMessage, error) {
 	return body, nil
 }
 
-func Serialize(message Message) []byte {
-	header := message.Header
-	var data []byte
+func serialized_message_size(message Message) int {
+	size_message := MESSAGE_HEADER_SIZE
 
-	if message.Body == nil {
-		data = make([]byte, MESSAGE_HEADER_SIZE)
-	} else {
-		data = make([]byte, MESSAGE_HEADER_SIZE+header.SizePayload)
+	if message.Body != nil {
+		size_message += int(message.Header.SizePayload)
 	}
 
-	data[0] = byte(header.Type)
-	data[1] = header.SeqNum
-	data[2] = header.AckNum
-	binary.BigEndian.PutUint32(data[3:7], header.AgencyId)
-	binary.BigEndian.PutUint16(data[7:9], header.SizePayload)
-	data[9] = header.SizeName
-	data[10] = header.SizeSurName
+	return size_message
+}
+
+func serialize_into(data []byte, message Message) []byte {
+	header := message.Header
+	offset := len(data)
+	data = data[:offset+serialized_message_size(message)]
+	serialized_message := data[offset:]
+	clear(serialized_message)
+
+	serialized_message[0] = byte(header.Type)
+	serialized_message[1] = header.SeqNum
+	serialized_message[2] = header.AckNum
+	binary.BigEndian.PutUint32(serialized_message[3:7], header.AgencyId)
+	binary.BigEndian.PutUint16(serialized_message[7:9], header.SizePayload)
+	serialized_message[9] = header.SizeName
+	serialized_message[10] = header.SizeSurName
 
 	if message.Body != nil {
 		body := message.Body
-		offset := MESSAGE_HEADER_SIZE
+		body_offset := MESSAGE_HEADER_SIZE
 
-		binary.BigEndian.PutUint32(data[offset:offset+4], body.Dni)
-		offset += 4
-		binary.BigEndian.PutUint32(data[offset:offset+4], body.Bet)
-		offset += 4
-		binary.BigEndian.PutUint16(data[offset:offset+2], body.Year)
-		offset += 2
-		data[offset] = body.Month
-		offset++
-		data[offset] = body.Day
-		offset++
+		binary.BigEndian.PutUint32(serialized_message[body_offset:body_offset+4], body.Dni)
+		body_offset += 4
+		binary.BigEndian.PutUint32(serialized_message[body_offset:body_offset+4], body.Bet)
+		body_offset += 4
+		binary.BigEndian.PutUint16(serialized_message[body_offset:body_offset+2], body.Year)
+		body_offset += 2
+		serialized_message[body_offset] = body.Month
+		body_offset++
+		serialized_message[body_offset] = body.Day
+		body_offset++
 
-		offset += copy(data[offset:], []byte(body.Name))
-		copy(data[offset:], []byte(body.SurName))
+		body_offset += copy(serialized_message[body_offset:], body.Name)
+		copy(serialized_message[body_offset:], body.SurName)
 	}
 
 	return data
+}
+
+func Serialize(message Message) []byte {
+	data := make([]byte, 0, serialized_message_size(message))
+	return serialize_into(data, message)
 }
 
 func deserialize_header(data []byte) (HeaderMessage, error) {

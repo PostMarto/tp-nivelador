@@ -59,7 +59,8 @@ type Client struct {
 	id                 uint32
 	window_base        uint8
 	input_done         bool
-	last_batch         *messages.Batch
+	last_batch         []byte
+	batch_buffer       []byte
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
@@ -99,6 +100,7 @@ func NewClient(config ClientConfig) (*Client, error) {
 	client.status = CONNECTING
 	client.id = uint32(id)
 	client.window_base = 0
+	client.batch_buffer = messages.Build_batch_buffer(config.BatchSize)
 	return client, nil
 }
 
@@ -147,15 +149,13 @@ func (client *Client) send(message messages.Message) error {
 	return nil
 }
 
-func (client *Client) send_batch(batch messages.Batch) error {
-	serialized_batch := messages.Serialize_batch(batch)
-
-	if err := safe_socket.SendAll(client.conn, serialized_batch); err != nil {
+func (client *Client) send_batch(batch []byte) error {
+	if err := safe_socket.SendAll(client.conn, batch); err != nil {
 		logger.Error("send-batch", logger.Fail)
 		return err
 	}
 
-	client.last_batch = &batch
+	client.last_batch = batch
 	return nil
 }
 
@@ -164,7 +164,7 @@ func (client *Client) resend_last_batch() error {
 		return errors.New("there is no batch to resend")
 	}
 
-	return client.send_batch(*client.last_batch)
+	return client.send_batch(client.last_batch)
 }
 
 func (client *Client) get_next_seq_num() uint8 {

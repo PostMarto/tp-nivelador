@@ -138,9 +138,10 @@ func (client *Client) next_batch() error {
 		return nil
 	}
 
-	messages_in_batch := make([]messages.Message, 0, client.config.BatchSize)
+	client.batch_buffer = client.batch_buffer[:messages.BATCH_HEADER_SIZE]
+	messages_in_batch := 0
 
-	for len(messages_in_batch) < client.config.BatchSize {
+	for messages_in_batch < client.config.BatchSize {
 		if !client.reader.Scan() {
 			if err := client.reader.Err(); err != nil {
 				return err
@@ -149,17 +150,24 @@ func (client *Client) next_batch() error {
 			break
 		}
 
-		message, err := messages.Build_message(messages.BET, uint8(len(messages_in_batch)), 0, client.id, client.reader.Text())
+		var err error
+		client.batch_buffer, err = messages.Append_bet(
+			client.batch_buffer,
+			uint8(messages_in_batch),
+			client.id,
+			client.reader.Text(),
+		)
 		if err != nil {
 			logger.Error("send-batch-build-message", logger.Fail)
 			return err
 		}
-		messages_in_batch = append(messages_in_batch, message)
+
+		messages_in_batch++
 	}
 
-	if len(messages_in_batch) > 0 {
-		batch := messages.Build_batch(messages_in_batch)
-		return client.send_batch(batch)
+	if messages_in_batch > 0 {
+		messages.Set_batch_size(client.batch_buffer, uint16(messages_in_batch))
+		return client.send_batch(client.batch_buffer)
 	}
 
 	if client.input_done {
